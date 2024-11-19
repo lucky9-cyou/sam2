@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+from torchvision.transforms.functional import resize, to_pil_image
 
 
 def get_sdpa_settings():
@@ -204,6 +205,16 @@ def load_video_frames(
             async_loading_frames=async_loading_frames,
             compute_device=compute_device,
         )
+    elif isinstance(video_path, list):
+        return load_video_frames_from_np_array(
+            images_np=video_path,
+            image_size=image_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            img_mean=img_mean,
+            img_std=img_std,
+            async_loading_frames=async_loading_frames,
+            compute_device=compute_device,
+        )
     else:
         raise NotImplementedError(
             "Only MP4 video and JPEG folder are supported at this moment"
@@ -276,6 +287,43 @@ def load_video_frames_from_jpg_images(
     images /= img_std
     return images, video_height, video_width
 
+def load_video_frames_from_np_array(
+    images_np,
+    image_size,
+    offload_video_to_cpu,
+    img_mean=(0.485, 0.456, 0.406),
+    img_std=(0.229, 0.224, 0.225),
+    async_loading_frames=False,
+    compute_device=torch.device("cuda"),
+):
+    if async_loading_frames:
+        raise NotImplementedError("Async loading is not supported for numpy arrays")
+
+    num_frames = len(images_np)
+    if num_frames == 0:
+        raise RuntimeError("no images found in images_np")
+    img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+    img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+    
+    images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
+    for n, img_np in enumerate(tqdm(images_np, desc="frame loading (NP array)")):
+        img_pil = to_pil_image(img_np)
+        img_np = np.array(img_pil.resize((image_size, image_size)))
+        if img_np.dtype == np.uint8:  # np.uint8 is expected for JPEG images
+            img_np = img_np / 255.0
+        else:
+            raise RuntimeError(f"Unknown image dtype: {img_np.dtype} on {n}")
+        img = torch.from_numpy(img_np).permute(2, 0, 1)
+        video_width, video_height = img_pil.size  # the original video size
+        images[n] = img
+    if not offload_video_to_cpu:
+        images = images.to(compute_device)
+        img_mean = img_mean.to(compute_device)
+        img_std = img_std.to(compute_device)
+    # normalize by mean and std
+    images -= img_mean
+    images /= img_std
+    return images, video_height, video_width
 
 def load_video_frames_from_video_file(
     video_path,
